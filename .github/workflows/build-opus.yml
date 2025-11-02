@@ -1,52 +1,76 @@
-name: Build Opus Native Binaries
+name: Build Opus (All Platforms)
 
 on:
   workflow_dispatch:
   push:
-    branches: [dev]
+    branches: [main]
 
 jobs:
-  build:
+  build-native:
+    name: Build Native (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
             artifact: libopus.so
-            build: |
-              sudo apt-get update
-              sudo apt-get install -y autoconf automake libtool make gcc g++
-              ./autogen.sh
-              ./configure --enable-shared --disable-static
-              make -j$(nproc)
-              cp ./.libs/libopus.so artifacts/
           - os: windows-latest
             artifact: opus.dll
-            build: |
-              mkdir build && cd build
-              cmake .. -G "Visual Studio 17 2022" -A x64
-              cmake --build . --config Release
-              mkdir ../artifacts
-              copy .\Release\opus.dll ..\artifacts\opus.dll
           - os: macos-latest
             artifact: libopus.dylib
-            build: |
-              brew install automake autoconf libtool
-              ./autogen.sh
-              ./configure --enable-shared --disable-static
-              make -j$(sysctl -n hw.logicalcpu)
-              cp ./.libs/libopus.dylib artifacts/
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Opus
+      - name: Install dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake
+
+      - name: Configure & Build
         run: |
-          mkdir -p artifacts
-          ${{ matrix.build }}
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --config Release --parallel
+          mkdir -p ../artifacts
+          cp ./libopus.* ../artifacts/ || cp ./Release/opus.dll ../artifacts/ || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.os }}-opus
+          name: ${{ runner.os }}-opus
+          path: artifacts/*
+
+  build-webgl:
+    name: Build WebGL (Emscripten)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Emscripten SDK
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+          actions-cache-key: emsdk
+
+      - name: Build with Emscripten
+        run: |
+          mkdir build && cd build
+          emcmake cmake .. -DCMAKE_BUILD_TYPE=Release
+          emmake make -j$(nproc)
+          mkdir -p ../artifacts
+          # Build WASM + JS module for Unity
+          emcc ./*.a -O3 \
+            -s MODULARIZE=1 -s EXPORT_ES6=1 \
+            -s ENVIRONMENT=web \
+            -s EXPORTED_FUNCTIONS='["_opus_encoder_create","_opus_encode","_opus_decoder_create","_opus_decode"]' \
+            -o ../artifacts/libopus.js
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webgl-opus
           path: artifacts/*
