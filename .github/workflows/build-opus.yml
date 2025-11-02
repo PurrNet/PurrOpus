@@ -1,51 +1,88 @@
-name: Build Opus (All Platforms)
+name: Build & Release Opus (All Platforms)
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags:
+      - "v*"
+
+concurrency:
+  group: build-opus-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build-native:
-    name: Build Native (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            artifact: libopus.so
-          - os: windows-latest
-            artifact: opus.dll
-          - os: macos-latest
-            artifact: libopus.dylib
-
+  linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y cmake build-essential
 
-      - name: Install dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: brew install cmake
-
-      - name: Configure & Build
+      - name: Build
         run: |
           mkdir build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
-          cmake --build . --config Release --parallel
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
+          cmake --build . --parallel
           mkdir -p ../artifacts
-          cp ./libopus.* ../artifacts/ || cp ./Release/opus.dll ../artifacts/ || true
-
+          cp libopus.so ../artifacts/
+          ls -la ../artifacts
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ runner.os }}-opus
+          name: linux-opus
           path: artifacts/*
 
-  build-webgl:
-    name: Build WebGL (Emscripten)
+  macos:
+    name: Build macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install cmake || true
+
+      - name: Build
+        run: |
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
+          cmake --build . --parallel
+          mkdir -p ../artifacts
+          cp libopus.dylib ../artifacts/
+          ls -la ../artifacts
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-opus
+          path: artifacts/*
+
+  windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure & Build
+        run: |
+          mkdir build
+          cd build
+          cmake .. -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
+          cmake --build . --config Release --parallel
+          cd ..
+          mkdir artifacts
+          dir build /s
+          for /r build %%i in (opus.dll) do copy "%%i" artifacts\opus.dll || echo DLL not found
+          dir artifacts
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-opus
+          path: artifacts/*
+
+  webgl:
+    name: Build WebGL
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,21 +93,50 @@ jobs:
           version: 3.1.64
           actions-cache-key: emsdk
 
-      - name: Build with Emscripten
+      - name: Build WebGL (Emscripten)
         run: |
           mkdir build && cd build
           emcmake cmake .. -DCMAKE_BUILD_TYPE=Release
           emmake make -j$(nproc)
           mkdir -p ../artifacts
-          # Build WASM + JS module for Unity
           emcc ./*.a -O3 \
             -s MODULARIZE=1 -s EXPORT_ES6=1 \
             -s ENVIRONMENT=web \
             -s EXPORTED_FUNCTIONS='["_opus_encoder_create","_opus_encode","_opus_decoder_create","_opus_decode"]' \
             -o ../artifacts/libopus.js
-
+          echo WebGL build done
+          ls ../artifacts
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: webgl-opus
           path: artifacts/*
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [linux, macos, windows, webgl]
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create release archives
+        run: |
+          cd dist
+          mkdir packed
+          for dir in *; do
+            zip -r "packed/${dir}.zip" "$dir"
+          done
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || 'latest' }}
+          name: "Opus Build - ${{ github.ref_name || 'latest' }}"
+          draft: false
+          prerelease: false
+          files: dist/packed/*.zip
