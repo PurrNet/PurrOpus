@@ -65,6 +65,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure & Build
+        shell: cmd
         run: |
           mkdir build
           cd build
@@ -73,7 +74,7 @@ jobs:
           cd ..
           mkdir artifacts
           dir build /s
-          for /r build %%i in (opus.dll) do copy "%%i" artifacts\opus.dll || echo DLL not found
+          for /r build %%i in (opus.dll) do copy "%%i" artifacts\opus.dll
           dir artifacts
       - name: Upload artifact
         uses: actions/upload-artifact@v4
