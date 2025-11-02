@@ -1,0 +1,107 @@
+name: Build & Release Opus (All Platforms)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+
+jobs:
+  build-native:
+    name: Build Native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: libopus.so
+          - os: windows-latest
+            artifact: opus.dll
+          - os: macos-latest
+            artifact: libopus.dylib
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake
+
+      - name: Configure & Build
+        run: |
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --config Release --parallel
+          mkdir -p ../artifacts
+          cp ./libopus.* ../artifacts/ || cp ./Release/opus.dll ../artifacts/ || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ runner.os }}-opus
+          path: artifacts/*
+
+  build-webgl:
+    name: Build WebGL (Emscripten)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Emscripten SDK
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+          actions-cache-key: emsdk
+
+      - name: Build with Emscripten
+        run: |
+          mkdir build && cd build
+          emcmake cmake .. -DCMAKE_BUILD_TYPE=Release
+          emmake make -j$(nproc)
+          mkdir -p ../artifacts
+          emcc ./*.a -O3 \
+            -s MODULARIZE=1 -s EXPORT_ES6=1 \
+            -s ENVIRONMENT=web \
+            -s EXPORTED_FUNCTIONS='["_opus_encoder_create","_opus_encode","_opus_decoder_create","_opus_decode"]' \
+            -o ../artifacts/libopus.js
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webgl-opus
+          path: artifacts/*
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-native, build-webgl]
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create release archive
+        run: |
+          cd dist
+          mkdir packed
+          for dir in *; do
+            zip -r "packed/${dir}.zip" "$dir"
+          done
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Latest Opus Build"
+          draft: false
+          prerelease: false
+          files: dist/packed/*.zip
