@@ -1,0 +1,52 @@
+name: Build Opus Native Binaries
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: libopus.so
+            build: |
+              sudo apt-get update
+              sudo apt-get install -y autoconf automake libtool make gcc g++
+              ./autogen.sh
+              ./configure --enable-shared --disable-static
+              make -j$(nproc)
+              cp ./.libs/libopus.so artifacts/
+          - os: windows-latest
+            artifact: opus.dll
+            build: |
+              mkdir build && cd build
+              cmake .. -G "Visual Studio 17 2022" -A x64
+              cmake --build . --config Release
+              mkdir ../artifacts
+              copy .\Release\opus.dll ..\artifacts\opus.dll
+          - os: macos-latest
+            artifact: libopus.dylib
+            build: |
+              brew install automake autoconf libtool
+              ./autogen.sh
+              ./configure --enable-shared --disable-static
+              make -j$(sysctl -n hw.logicalcpu)
+              cp ./.libs/libopus.dylib artifacts/
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Opus
+        run: |
+          mkdir -p artifacts
+          ${{ matrix.build }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-opus
+          path: artifacts/*
